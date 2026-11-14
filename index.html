@@ -207,7 +207,7 @@
 
           <div>
             <label class="block text-xs font-semibold text-slate-300 mb-1.5">Mensaje o Felicitación para Grado 11° (Opcional)</label>
-            <textarea id="teacherMessage" rows="2" placeholder="Escribe un comentario motivador para los estudiantes..." class="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/90 border border-slate-700 text-white text-sm focus:outline-none focus:border-amber-500"></textarea>
+            <textarea id="teacherMessage" rows="2" placeholder="Escribe un comentario motivador u observaciones para los estudiantes..." class="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/90 border border-slate-700 text-white text-sm focus:outline-none focus:border-amber-500"></textarea>
           </div>
 
           <button type="submit" id="submitVoteBtn" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-extrabold text-sm tracking-wide shadow-lg shadow-amber-500/20 transition flex items-center justify-center gap-2">
@@ -313,9 +313,14 @@
               <i class="fa-solid fa-video"></i> Enlaces de Video
             </button>
           </div>
-          <button type="button" onclick="exportVotesCSV()" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2">
-            <i class="fa-solid fa-file-excel"></i> Exportar Resultados (CSV / Excel)
-          </button>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" onclick="renderAdminResults()" class="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold text-xs flex items-center gap-1.5">
+              <i class="fa-solid fa-rotate"></i> Actualizar
+            </button>
+            <button type="button" onclick="exportVotesCSV()" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2">
+              <i class="fa-solid fa-file-excel"></i> Exportar Resultados (CSV / Excel)
+            </button>
+          </div>
         </div>
 
         <div id="adminTabResults" class="space-y-5">
@@ -353,6 +358,8 @@
   </div>
 
   <script>
+    var GOOGLE_SHEET_API = "https://script.google.com/macros/s/AKfycbzgxUeZTCHBGDZrp3TfmNlpS8LuKKpTlO9-k4CrYgmNtbXdAekO4GUbokGXC-8ydXICMA/exec";
+
     var DEFAULT_VIDEOS = {
       1: "https://drive.google.com/file/d/1Dci7tZjPGWmAFoQeC-bVd3ZEFNFf5R2h/view?usp=sharing",
       2: "https://drive.google.com/file/d/1TWHp21_bPPRO49E3zyqU-xQVQ1WJIc8L/view?usp=sharing",
@@ -438,21 +445,53 @@
       });
     });
 
-    var CLOUD_BUCKET = "https://kvdb.io/A2k9LmP7xQrT4vN8wZ1yB5/festival_cine_sfs_2026_votos";
+    async function sendVoteToSheet(voteObj) {
+      try {
+        await fetch(GOOGLE_SHEET_API, {
+          method: "POST",
+          mode: "no-cors",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(voteObj)
+        });
+        var syncedIds = JSON.parse(localStorage.getItem("festival_cine_synced_ids") || "[]");
+        if (syncedIds.indexOf(voteObj.id) === -1) {
+          syncedIds.push(voteObj.id);
+          localStorage.setItem("festival_cine_synced_ids", JSON.stringify(syncedIds));
+        }
+      } catch (err) {}
+    }
+
+    async function syncPendingLocalVotes() {
+      var localVotes = [];
+      var syncedIds = [];
+      try {
+        localVotes = JSON.parse(localStorage.getItem("festival_cine_votes_local") || "[]");
+        syncedIds = JSON.parse(localStorage.getItem("festival_cine_synced_ids") || "[]");
+      } catch (e) {}
+
+      for (var i = 0; i < localVotes.length; i++) {
+        var v = localVotes[i];
+        if (v && v.id && syncedIds.indexOf(v.id) === -1) {
+          await sendVoteToSheet(v);
+        }
+      }
+    }
 
     async function fetchAllVotes() {
+      await syncPendingLocalVotes();
       var localVotes = [];
       try { localVotes = JSON.parse(localStorage.getItem("festival_cine_votes_local") || "[]"); } catch (e) {}
+
       try {
-        var res = await fetch(CLOUD_BUCKET, { cache: "no-store" });
+        var res = await fetch(GOOGLE_SHEET_API + "?t=" + Date.now(), { cache: "no-store" });
         if (res.ok) {
           var cloudVotes = await res.json();
           if (Array.isArray(cloudVotes)) {
             var map = new Map();
-            cloudVotes.concat(localVotes).forEach(function(v) { map.set(v.id, v); });
-            var merged = Array.from(map.values());
-            localStorage.setItem("festival_cine_votes_local", JSON.stringify(merged));
-            return merged;
+            cloudVotes.concat(localVotes).forEach(function(v) {
+              if (v && v.id) map.set(String(v.id), v);
+            });
+            return Array.from(map.values());
           }
         }
       } catch (err) {}
@@ -460,17 +499,16 @@
     }
 
     async function saveNewVote(voteObj) {
-      var currentVotes = await fetchAllVotes();
-      currentVotes.push(voteObj);
-      localStorage.setItem("festival_cine_votes_local", JSON.stringify(currentVotes));
-      try {
-        await fetch(CLOUD_BUCKET, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(currentVotes)
-        });
-      } catch (err) {}
+      var localVotes = [];
+      try { localVotes = JSON.parse(localStorage.getItem("festival_cine_votes_local") || "[]"); } catch (e) {}
+      localVotes.push(voteObj);
+      localStorage.setItem("festival_cine_votes_local", JSON.stringify(localVotes));
+      await sendVoteToSheet(voteObj);
     }
+
+    window.addEventListener("load", function() {
+      syncPendingLocalVotes();
+    });
 
     document.getElementById("voteForm").addEventListener("submit", async function(e) {
       e.preventDefault();
@@ -569,7 +607,7 @@
         var fVotes = votes.filter(function(v) { return v.film === film; });
         var count = fVotes.length;
         var pct = total > 0 ? Math.round((count / total) * 100) : 0;
-        var avgStars = count > 0 ? (fVotes.reduce(function(acc, cur) { return acc + cur.rating; }, 0) / count).toFixed(2) : "0.00";
+        var avgStars = count > 0 ? (fVotes.reduce(function(acc, cur) { return acc + Number(cur.rating); }, 0) / count).toFixed(2) : "0.00";
         return '<div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2">' +
           '<div class="text-xs font-bold text-amber-400">' + film + '</div>' +
           '<div class="flex items-baseline justify-between"><span class="text-2xl font-extrabold text-white">' + count + ' <span class="text-xs font-normal text-slate-400">votos</span></span><span class="text-sm font-bold text-emerald-400">' + pct + '%</span></div>' +
